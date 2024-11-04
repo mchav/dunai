@@ -1,5 +1,6 @@
-{-# LANGUAGE Arrows #-}
-{-# LANGUAGE CPP    #-}
+{-# LANGUAGE Arrows            #-}
+{-# LANGUAGE CPP               #-}
+{-# LANGUAGE OverloadedStrings #-}
 -- |
 -- Copyright  : (c) Ivan Perez and Manuel Baerenz, 2016
 -- License    : BSD3
@@ -15,19 +16,28 @@ import FRP.Yampa     as Yampa
 #endif
 
 import Control.Concurrent
-import Graphics.UI.SDL            as SDL
-import Graphics.UI.SDL.Primitives as SDL
+import Foreign.C.Types
+import qualified SDL
+import qualified SDL.Primitive as SDL
 
+screenWidth, screenHeight :: CInt
+(screenWidth, screenHeight) = (800, 600)
+
+main :: IO ()
 main = do
-   SDL.init [InitEverything]
-   SDL.setVideoMode 800 600 32 [SWSurface]
+   SDL.initialize [SDL.InitVideo]
+   window <- SDL.createWindow
+             "Bouncing ball"
+             SDL.defaultWindow { SDL.windowInitialSize = SDL.V2 screenWidth screenHeight }
+   SDL.showWindow window
+   renderer <- SDL.createRenderer window (-1) SDL.defaultRenderer
+
    reactimate (return ())
-              (\_ -> return (0.01, Just ()))
-              (\_ e -> render e >> return False)
+              (\_ -> return (0.005, Just ()))
+              (\_ e -> render e renderer)
               sf
 
 sf = bouncingBall (100.0 :: Float) 0.0
-
 
 bouncingBall p0 v0 =
   switch (proc (_) -> do
@@ -55,17 +65,26 @@ fallingBall p0 v0 = proc () -> do
 -- whenS :: (a -> Bool) -> SF a (Yampa.Event a)
 -- whenS p = (((arr p >>> edge) &&& arr id) >>> (arr (uncurry tag)))
 
-render (p,_) = do
-  screen <- SDL.getVideoSurface
+render :: RealFrac a => (a, b) -> SDL.Renderer -> IO Bool
+render (p,_) renderer = do
+  events <- SDL.pollEvents
+  let quit = elem SDL.QuitEvent $ map SDL.eventPayload events
 
-  white <- SDL.mapRGB (SDL.surfaceGetPixelFormat screen) 0xFF 0xFF 0xFF
-  SDL.fillRect screen Nothing white
+  -- Set background.
+  let white = SDL.V4 maxBound maxBound maxBound maxBound
+  SDL.rendererDrawColor renderer SDL.$= white
+  SDL.clear renderer
 
-  SDL.filledCircle screen 100 (600 - 100 - round p) 30 (Pixel 0xFF0000FF)
+  let red = SDL.V4 maxBound 0 0 maxBound
+  SDL.rendererDrawColor renderer SDL.$= red
 
-  SDL.flip screen
+  SDL.fillCircle renderer (SDL.V2 100 (600 - 100 - round p)) 30 red
+
+  SDL.present renderer
 
   threadDelay 1000
+
+  return quit
 
 -- * Auxiliary functions
 
