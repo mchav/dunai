@@ -4,5 +4,6 @@ packages:
   dunai-frp-bearriver/
   dunai-examples/classicfrp/
   dunai-examples/bouncingball/
+  dunai-examples/list/
   dunai-examples/reversefrpzoo/wormholes/
   dunai-examples/taggingmonad/

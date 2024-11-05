@@ -1,4 +1,5 @@
-{-# LANGUAGE Arrows #-}
+{-# LANGUAGE Arrows            #-}
+{-# LANGUAGE OverloadedStrings #-}
 -- |
 -- Copyright  : (c) Ivan Perez and Manuel Baerenz, 2016
 -- License    : BSD3
@@ -8,26 +9,29 @@
 -- objects can be created and destroyed.
 module Main where
 
-import           Control.Applicative
 import           Control.Concurrent
-import           Control.Monad
-import           Control.Monad.Identity
-import           Control.Monad.Trans.Reader
-import           Data.MonadicStreamFunction hiding (reactimate, switch, trace)
+import           Data.MonadicStreamFunction hiding (reactimate, trace)
 import           Data.MonadicStreamFunction.InternalCore (MSF(..))
-import qualified Data.MonadicStreamFunction as MSF
-import           Debug.Trace
-import           FRP.Yampa                  as Yampa
-import           Graphics.UI.SDL            as SDL
-import           Graphics.UI.SDL.Primitives as SDL
+import           Foreign.C.Types
+import           FRP.Yampa                             as Yampa
+import qualified SDL
+import qualified SDL.Primitive              as SDL
 import           ListT                      as L
 
+screenWidth, screenHeight :: CInt
+(screenWidth, screenHeight) = (800, 600)
+
+main :: IO ()
 main = do
-   SDL.init [InitEverything]
-   SDL.setVideoMode 800 600 32 [SWSurface]
-   reactimate (getMouse)
-              (\_ -> getMouse >>= (\p -> return (0.02, Just p)))
-              (\_ e -> render e >> return False)
+   SDL.initialize [SDL.InitVideo]
+   window <- SDL.createWindow
+             "Bouncing balls"
+             SDL.defaultWindow { SDL.windowInitialSize = SDL.V2 screenWidth screenHeight }
+   SDL.showWindow window
+   renderer <- SDL.createRenderer window (-1) SDL.defaultRenderer
+   reactimate getMouse
+              (\_ -> getMouse >>= (\p -> return (0.005, Just p)))
+              (\_ e -> render e renderer)
               bouncingBalls
 
 bouncingBalls = proc (mp@(mx, my, ml, mr)) -> do
@@ -39,18 +43,20 @@ bouncingBalls = proc (mp@(mx, my, ml, mr)) -> do
   bs  <- fireballs        -< (ml', (my, 0))
   returnA -< (b : bs)
 
-fireballs :: SF (Bool, (Float, Float)) [(Float, Float)]
 fireballs = switch
   (    arr (const [])
    &&& arr (\(mp, pos) -> if mp then Event pos else Yampa.NoEvent)
-  )
+   -- use notYet to delay the switching event to the next point in
+   -- time, so that the switching (and hence the recursive call to
+   -- fly) occurs when the "old" tipping event is gone.
+   >>> second notYet
+  ) 
 
   (\(p, v) -> let oldfb = voidI $ runListMSF (liftTransS (bouncingBall p v))
                   newfb = fireballs
               in (oldfb &&& newfb) >>> arr2 (++)
   )
 
-bouncingBall :: Float -> Float -> SF () (Float, Float)
 bouncingBall p0 v0 =
   switch (proc (_) -> do
             (p,v)  <- fallingBall p0 v0  -< ()
@@ -66,7 +72,6 @@ flippedVel p0 v0 acc = sqrt (2 * (ike + ipe))
   where ike = abs (acc * p0)
         ipe = (v0**2)/2
 
-fallingBall :: Float -> Float -> SF () (Float, Float)
 fallingBall p0 v0 = proc () -> do
   v <- (v0 +) ^<< integral -< (-99.8)
   p <- (p0 +) ^<< integral -< v
@@ -75,30 +80,38 @@ fallingBall p0 v0 = proc () -> do
 -- Input
 getMouse :: IO (Float, Float, Bool, Bool)
 getMouse = do
-  pumpEvents
-  (x,y,btns) <- SDL.getMouseState
-  let left  = ButtonLeft  `elem` btns
-      right = ButtonRight `elem` btns
-  return (fromIntegral x, fromIntegral y, left, right)
+  SDL.P (SDL.V2 x y) <- SDL.getAbsoluteMouseLocation
+  isMouseDown <- SDL.getMouseButtons
+
+  let leftButton  = isMouseDown SDL.ButtonLeft
+      rightButton = isMouseDown SDL.ButtonRight
+  return (fromIntegral x, fromIntegral y, leftButton, rightButton)
 
 -- Output
-render ps = do
-  screen <- SDL.getVideoSurface
+render ps renderer = do
+  events <- SDL.pollEvents
+  let quit = elem SDL.QuitEvent $ map SDL.eventPayload events
 
-  white <- SDL.mapRGB (SDL.surfaceGetPixelFormat screen) 0xFF 0xFF 0xFF
-  SDL.fillRect screen Nothing white
+  -- Set background.
+  let white = SDL.V4 maxBound maxBound maxBound maxBound
+  SDL.rendererDrawColor renderer SDL.$= white
+  SDL.clear renderer
 
-  mapM_ (\((p,_),xi) -> SDL.filledCircle
-                          screen
-                          (100 + xi * 100)
-                          (600 - 100 - round p)
+  let red = SDL.V4 maxBound 0 0 maxBound
+  SDL.rendererDrawColor renderer SDL.$= red
+
+  mapM_ (\((p,_),xi) -> SDL.fillCircle
+                          renderer
+                          (SDL.V2 (100 + xi * 100) (600 - 100 - round p))
                           30
-                          (Pixel 0xFF0000FF))
+                          red)
      (zip ps [1..])
 
-  SDL.flip screen
+  SDL.present renderer
 
   threadDelay 1000
+
+  return quit
 
 -- Auxiliary MSF functions
 applyMSF :: Monad m => (a -> MSF m b c) -> MSF m (a, b) c
